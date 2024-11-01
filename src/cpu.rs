@@ -1,247 +1,11 @@
 mod error;
+mod opcode;
 
-use crate::cpu::error::CpuError;
-
-enum ValueOrReg8 {
-    Reg8(Register8),
-    Value(u8),
-}
-
-enum Register8or16 {
-    Reg8(Register8),
-    Reg16(Register16),
-}
-
-enum Register8 {
-    B,
-    C,
-    D,
-    E,
-    H,
-    L,
-    HlAddress,
-    A,
-}
-
-impl TryFrom<u8> for Register8 {
-    type Error = CpuError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::B),
-            1 => Ok(Self::C),
-            2 => Ok(Self::D),
-            3 => Ok(Self::E),
-            4 => Ok(Self::H),
-            5 => Ok(Self::L),
-            6 => Ok(Self::HlAddress),
-            7 => Ok(Self::A),
-            r => Err(CpuError::InvalidRegisterId { id: r }),
-        }
-    }
-}
-
-enum Register16 {
-    BC,
-    DE,
-    HL,
-    SP,
-}
-
-impl TryFrom<u8> for Register16 {
-    type Error = CpuError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::BC),
-            1 => Ok(Self::DE),
-            2 => Ok(Self::HL),
-            3 => Ok(Self::SP),
-            r => Err(CpuError::InvalidRegisterId { id: r }),
-        }
-    }
-}
-
-enum RegisterStack {
-    BC,
-    DE,
-    HL,
-    AF,
-}
-
-enum RegisterMemory {
-    BC,
-    DE,
-    HLPlus,
-    HLMinus,
-}
-
-impl TryFrom<u8> for RegisterMemory {
-    type Error = CpuError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::BC),
-            1 => Ok(Self::DE),
-            2 => Ok(Self::HLPlus),
-            3 => Ok(Self::HLMinus),
-            r => Err(CpuError::InvalidRegisterId { id: r }),
-        }
-    }
-}
-
-enum RegisterCond {
-    NZ,
-    Z,
-    NC,
-    C,
-}
-
-impl TryFrom<u8> for RegisterCond {
-    type Error = CpuError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::NZ),
-            1 => Ok(Self::Z),
-            2 => Ok(Self::NC),
-            3 => Ok(Self::C),
-            r => Err(CpuError::InvalidRegisterId { id: r }),
-        }
-    }
-}
-
-enum CarryOption {
-    With,
-    Without,
-}
-
-/// Operation code organized based on https://rgbds.gbdev.io/docs/v0.8.0/gbz80.7
-/// https://gbdev.io/pandocs/CPU_Instruction_Set.html
-enum Opcode {
-    // --- Arithmetic and logic ---
-    /// ADD a, imm8 and ADD a, r8 and ADC a, r8 and ADC a, imm8
-    AddRegA(ValueOrReg8, CarryOption),
-    /// SUB a, imm8 and SUB a, r8 and ADC a, r8 and ADC a, imm8
-    SubtractRegA(ValueOrReg8, CarryOption),
-    /// AND a, imm8 and AND a, r8
-    BitwiseAndRegA(ValueOrReg8),
-    /// XOR a, imm8 and XOR a, r8
-    BitwiseXorRegA(ValueOrReg8),
-    /// OR a, imm8 and OR a, r8
-    BitwiseOrRegA(ValueOrReg8),
-    /// CP a, imm8 and CP a, r8
-    ComparingRegA(ValueOrReg8),
-    /// ADD hl, r16
-    AddToHl(Register16),
-    /// INC r8 and INC r16
-    Increment(Register8or16),
-    /// DEC r8 and DEC r16
-    Decrement(Register8or16),
-
-    // --- Bit operations ---
-    /// BIT b3,r8
-    BitTest { operand: Register8, bit_idx: u8 },
-    /// RES b3,r8
-    BitReset { operand: Register8, bit_idx: u8 },
-    /// SET b3, r8
-    BitSet { operand: Register8, bit_idx: u8 },
-    /// SWAP r8
-    BitSwap(Register8),
-
-    // --- Bit shift operations ---
-    /// RL r8 and RLC r8 and RLCA and RLA
-    BitRotateLeft(Register8, CarryOption),
-    /// RR r8 and RRC r8 and RRCA and RRA
-    BitRotateRight(Register8, CarryOption),
-    /// SLA r8
-    BitShiftLeft(Register8),
-    /// SRA r8
-    BitShiftRight(Register8),
-    /// SRL r8
-    BitShiftLogicRight(Register8),
-
-    // --- Load instructions ---
-    /// LD r8, imm8 and LD r8, r8
-    Load8 { src: ValueOrReg8, dest: Register8 },
-    /// LD r16, imm16
-    Load16 { src: u16, dest: Register16 },
-    /// LD \[r16mem\], a
-    LoadMemFromA { dest_addr: RegisterMemory },
-    /// LD a, \[r16mem\]
-    LoadAFromMem { src_addr: RegisterMemory },
-    /// LDH \[c\], a
-    LoadHighAToAddrC,
-    /// LDH a, \[c\]
-    LoadHighAddrCToA,
-    /// LDH \[imm8\], a
-    LoadHighFromA { src_addr: u8 },
-    /// LDH a, \[imm8\]
-    LoadHighToA { dest_addr: u8 },
-    /// LD \[imm16\], a
-    LoadFromA { dest_addr: u16 },
-    /// LD a, \[imm16\]
-    LoadToA { src_addr: u16 },
-
-    // --- Jumps and subroutines ---
-    /// JR imm8 and JR cond, imm8
-    JumpRelative {
-        offset: u8,
-        cond: Option<RegisterCond>,
-    },
-    /// JP imm16 and JP cond, imm16
-    Jump {
-        addr: u16,
-        cond: Option<RegisterCond>,
-    },
-    /// JP hl
-    JumpHl,
-    /// RET and RET cond
-    Return(Option<RegisterCond>),
-    /// RETI
-    ReturnInterrupts,
-    /// CALL imm16 and CALL cond, imm16
-    Call {
-        addr: u16,
-        cond: Option<RegisterCond>,
-    },
-    /// RST tgt3
-    RstCallVec { tgt3: u8 },
-
-    // --- Stack operations ---
-    /// LD hl, sp + imm8
-    LoadHlFromSpOffset { offset: u8 },
-    /// ADD sp, imm8
-    AddSp(u8),
-    /// LD \[imm16\], sp
-    LoadFromSp { dest_addr: u16 },
-    /// LD sp, hl
-    LoadSpFromHl,
-    /// PUSH r16stk
-    Push(RegisterStack),
-    /// POP r16stk,
-    Pop(RegisterStack),
-
-    // --- Miscellaneous ---
-    /// CCF
-    ComplementCarryFlag,
-    /// CPL
-    ComplementAccumulator,
-    /// DAA
-    DecimalAdjustAccumulator,
-    /// DI
-    DisableInterrupts,
-    /// EI
-    EnableInterrupts,
-    /// HALT
-    Halt,
-    /// NOP
-    Nop,
-    /// SCF
-    SetCarryFlag,
-    /// STOP
-    Stop,
-}
+use error::CpuError;
+use opcode::{
+    CarryOption, Opcode, Register16, Register8, Register8or16, RegisterCond, RegisterMemory,
+    RegisterStack, ValueOrReg8,
+};
 
 #[derive(Default)]
 struct Register {
@@ -342,15 +106,18 @@ impl Default for Memory {
 }
 
 impl Cpu {
-    pub fn next(&mut self, external: &mut CpuExternal) {
-        let bytes = vec![self.fetch(external.memory)];
+    pub fn next(&mut self, external: &mut CpuExternal) -> Result<(), CpuError> {
+        let mut bytes = vec![self.fetch(external.memory)];
         let opcode = match self.decode(bytes.as_ref()) {
             Ok(opcode) => opcode,
-            Err(_) => {
-                todo!()
+            Err(CpuError::DecodeNotEnoughBytes { bytes_len }) => {
+                (0..bytes_len).for_each(|_| bytes.push(self.fetch(external.memory)));
+                self.decode(bytes.as_ref())?
             }
+            Err(_) => todo!(),
         };
         self.execute(opcode, external);
+        Ok(())
     }
 
     fn fetch(&mut self, memory: &mut Memory) -> u8 {
@@ -360,48 +127,61 @@ impl Cpu {
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<Opcode, CpuError> {
-        let first_code = bytes
+        let op_byte = bytes
             .first()
-            .ok_or(CpuError::DecodeRequireBytes { bytes_len: 1 })?
+            .ok_or(CpuError::DecodeNotEnoughBytes { bytes_len: 1 })?
             .to_owned();
-        match first_code {
+        let opcode = match op_byte {
+            // Invalid opcodes
+            0xD3 | 0xDB | 0xDD | 0xE3 | 0xE4 | 0xEB | 0xEC | 0xED | 0xF4 | 0xFC | 0xFD => {
+                return Err(CpuError::InvalidOpcode(op_byte))
+            }
             0b00000000 => Opcode::Nop,
-            // LD r16, imm16
-            b if b & 0b11001111 == 0b00000001 => Opcode::Load16 {
+            // LD r16, imm16 (00xx0001)
+            0b00000001 | 0b00010001 | 0b0100001 | 0b00110001 => Opcode::Load16 {
                 src: self.arg_u16(bytes)?,
-                dest: Register16::try_from(bits54(b))?,
+                dest: Register16::try_from(bits54(op_byte))?,
             },
-            // LD [r16mem], a
-            b if b & 0b11001111 == 0b00000010 => Opcode::LoadMemFromA {
-                dest_addr: RegisterMemory::try_from(bits54(b))?,
+            // LD [r16mem], a (00xx0010)
+            0b00000010 | 0b00010010 | 0b0100010 | 0b00110010 => Opcode::LoadMemFromA {
+                dest_addr: RegisterMemory::try_from(bits54(op_byte))?,
             },
-            // LD a, [r16mem]
-            b if b & 0b11001111 == 0b00001010 => Opcode::LoadAFromMem {
-                src_addr: RegisterMemory::try_from(bits54(b))?,
+            // LD a, [r16mem] (00xx1010)
+            0b00001010 | 0b00011010 | 0b0101010 | 0b00111010 => Opcode::LoadAFromMem {
+                src_addr: RegisterMemory::try_from(bits54(op_byte))?,
             },
             // LD [imm16], sp
             0b00001000 => Opcode::LoadFromSp {
                 dest_addr: self.arg_u16(bytes)?,
             },
-            // INC r16
-            b if b & 0b11001111 == 0b00000011 => {
-                Opcode::Increment(Register8or16::Reg16(Register16::try_from(bits54(b))?))
+            // INC r16 (00xx0011)
+            0b00000011 | 0b00010011 | 0b0100011 | 0b00110011 => {
+                Opcode::Increment(Register8or16::Reg16(Register16::try_from(bits54(op_byte))?))
             }
-            // DEC r16
-            b if b & 0b11001111 == 0b00001011 => {
-                Opcode::Decrement(Register8or16::Reg16(Register16::try_from(bits54(b))?))
+            // DEC r16 (00xx1011)
+            0b00001011 | 0b00011011 | 0b0101011 | 0b00111011 => {
+                Opcode::Decrement(Register8or16::Reg16(Register16::try_from(bits54(op_byte))?))
             }
-            // ADD hl, r16
-            b if b & 0b11001111 == 0b00001001 => Opcode::AddToHl(Register16::try_from(bits54(b))?),
-            // INC r8
-            b if b & 0b11000111 == 0b00000100 => {
-                Opcode::Increment(Register8or16::Reg8(Register8::try_from(bits543(b))?))
+            // ADD hl, r16 (00xx1001)
+            0b00001001 | 0b00011001 | 0b0101001 | 0b00111001 => {
+                Opcode::AddToHl(Register16::try_from(bits54(op_byte))?)
+            }
+            // INC r8 (00xxx100)
+            0b00000100 | 0b00001100 | 0b0010100 | 0b00011100 | 0b00100100 | 0b00101100
+            | 0b0110100 | 0b00111100 => {
+                Opcode::Increment(Register8or16::Reg8(Register8::try_from(bits543(op_byte))?))
             }
             // DEC r8
-            b if b & 0b11000111 == 0b00000101 => {
-                Opcode::Decrement(Register8or16::Reg8(Register8::try_from(bits543(b))?))
+            0b00000101 | 0b00001101 | 0b0010101 | 0b00011101 | 0b00100101 | 0b00101101
+            | 0b0110101 | 0b00111101 => {
+                Opcode::Decrement(Register8or16::Reg8(Register8::try_from(bits543(op_byte))?))
             }
             // LD r8, imm8
+            0b00000110 | 0b00001110 | 0b0010110 | 0b00011110 | 0b00100110 | 0b00101110
+            | 0b0110110 | 0b00111110 => Opcode::Load8 {
+                src: ValueOrReg8::Value(self.arg_u8(bytes)?),
+                dest: Register8::try_from(bits543(op_byte))?,
+            },
             0b00000111 => Opcode::BitRotateLeft(Register8::A, CarryOption::Without),
             0b00001111 => Opcode::BitRotateRight(Register8::A, CarryOption::Without),
             0b00010111 => Opcode::BitRotateLeft(Register8::A, CarryOption::With),
@@ -416,52 +196,53 @@ impl Cpu {
                 cond: None,
             },
             // JR cond, imm8
-            b if b & 0b11100111 == 0b00100000 => Opcode::JumpRelative {
+            0b00100000 | 0b00101000 | 0b00110000 | 0b00111000 => Opcode::JumpRelative {
                 offset: self.arg_u8(bytes)?,
-                cond: Some(RegisterCond::try_from(bits43(b))?),
+                cond: Some(RegisterCond::try_from(bits43(op_byte))?),
             },
             0b00010000 => Opcode::Stop,
-            // LD r8, r8
-            b if (b & 0b11000000 == 0b01000000) && b != 0b01110110 => Opcode::Load8 {
-                src: ValueOrReg8::Reg8(Register8::try_from(bits543(b))?),
-                dest: Register8::try_from(bits210(b))?,
-            },
+            // HALT (NOTE: must be before LD r8, r8)
             0b01110110 => Opcode::Halt,
+            // LD r8, r8 (cover also HALT)
+            0b01000000..=0b01111111 => Opcode::Load8 {
+                src: ValueOrReg8::Reg8(Register8::try_from(bits543(op_byte))?),
+                dest: Register8::try_from(bits210(op_byte))?,
+            },
             // ADD a, r8
-            b if b & 0b11111000 == 0b10000000 => Opcode::AddRegA(
-                ValueOrReg8::Reg8(Register8::try_from(bits210(b))?),
+            0b10000000..=0b10000111 => Opcode::AddRegA(
+                ValueOrReg8::Reg8(Register8::try_from(bits210(op_byte))?),
                 CarryOption::Without,
             ),
             // ADC a, r8
-            b if b & 0b11111000 == 0b10001000 => Opcode::AddRegA(
-                ValueOrReg8::Reg8(Register8::try_from(bits210(b))?),
+            0b10001000..=0b10001111 => Opcode::AddRegA(
+                ValueOrReg8::Reg8(Register8::try_from(bits210(op_byte))?),
                 CarryOption::With,
             ),
             // SUB a, r8
-            b if b & 0b11111000 == 0b10010000 => Opcode::SubtractRegA(
-                ValueOrReg8::Reg8(Register8::try_from(bits210(b))?),
+            0b10010000..=0b10010111 => Opcode::SubtractRegA(
+                ValueOrReg8::Reg8(Register8::try_from(bits210(op_byte))?),
                 CarryOption::Without,
             ),
             // SBC a, r8
-            b if b & 0b11111000 == 0b10011000 => Opcode::SubtractRegA(
-                ValueOrReg8::Reg8(Register8::try_from(bits210(b))?),
+            0b10011000..=0b10011111 => Opcode::SubtractRegA(
+                ValueOrReg8::Reg8(Register8::try_from(bits210(op_byte))?),
                 CarryOption::With,
             ),
             // AND a, r8
-            b if b & 0b11111000 == 0b10100000 => {
-                Opcode::BitwiseAndRegA(ValueOrReg8::Reg8(Register8::try_from(bits210(b))?))
+            0b10100000..=0b10100111 => {
+                Opcode::BitwiseAndRegA(ValueOrReg8::Reg8(Register8::try_from(bits210(op_byte))?))
             }
             // XOR a, r8
-            b if b & 0b11111000 == 0b10101000 => {
-                Opcode::BitwiseXorRegA(ValueOrReg8::Reg8(Register8::try_from(bits210(b))?))
+            0b10101000..=0b10101111 => {
+                Opcode::BitwiseXorRegA(ValueOrReg8::Reg8(Register8::try_from(bits210(op_byte))?))
             }
             // OR a, r8
-            b if b & 0b11111000 == 0b10110000 => {
-                Opcode::BitwiseOrRegA(ValueOrReg8::Reg8(Register8::try_from(bits210(b))?))
+            0b10110000..=0b10110111 => {
+                Opcode::BitwiseOrRegA(ValueOrReg8::Reg8(Register8::try_from(bits210(op_byte))?))
             }
             // CP a, r8
-            b if b & 0b11111000 == 0b10111000 => {
-                Opcode::ComparingRegA(ValueOrReg8::Reg8(Register8::try_from(bits210(b))?))
+            0b10111000..=0b10111111 => {
+                Opcode::ComparingRegA(ValueOrReg8::Reg8(Register8::try_from(bits210(op_byte))?))
             }
             // ADD a, imm8
             0b11000110 => Opcode::AddRegA(
@@ -490,17 +271,17 @@ impl Cpu {
             // CP a, imm8
             0b11111110 => Opcode::ComparingRegA(ValueOrReg8::Value(self.arg_u8(bytes)?)),
             // RET cond
-            b if b & 0b11100111 == 0b11000000 => {
-                Opcode::Return(Some(RegisterCond::try_from(bits43(b))?))
+            0b11000000 | 0b11001000 | 0b11010000 | 0b11011000 => {
+                Opcode::Return(Some(RegisterCond::try_from(bits43(op_byte))?))
             }
             // RET
             0b11001001 => Opcode::Return(None),
             // RETI
             0b11011001 => Opcode::ReturnInterrupts,
             // JP cond, imm16
-            b if b & 0b11100111 == 0b11000010 => Opcode::Jump {
+            0b11000010 | 0b11001010 | 0b11010010 | 0b11011010 => Opcode::Jump {
                 addr: self.arg_u16(bytes)?,
-                cond: Some(RegisterCond::try_from(bits43(b))?),
+                cond: Some(RegisterCond::try_from(bits43(op_byte))?),
             },
             // JP imm16
             0b11000011 => Opcode::Jump {
@@ -510,9 +291,9 @@ impl Cpu {
             // JP hl
             0b11101001 => Opcode::JumpHl,
             // CALL cond, imm16
-            b if b & 0b11100111 == 0b11000100 => Opcode::Call {
+            0b11000100 | 0b11001100 | 0b11010100 | 0b11011100 => Opcode::Call {
                 addr: self.arg_u16(bytes)?,
-                cond: Some(RegisterCond::try_from(bits43(b))?),
+                cond: Some(RegisterCond::try_from(bits43(op_byte))?),
             },
             // CALL imm16
             0b11001101 => Opcode::Call {
@@ -520,7 +301,10 @@ impl Cpu {
                 cond: None,
             },
             // RST tgt3
-            b if b & 0b11000111 == 0b11000111 => Opcode::RstCallVec { tgt3: bits543(b) },
+            0b11000111 | 0b11001111 | 0b11010111 | 0b11011111 | 0b11100111 | 0b11101111
+            | 0b11110111 | 0b11111111 => Opcode::RstCallVec {
+                tgt3: bits543(op_byte),
+            },
             // POP r16stk
             0b11000001 => Opcode::Pop(RegisterStack::BC),
             0b11010001 => Opcode::Pop(RegisterStack::DE),
@@ -606,9 +390,8 @@ impl Cpu {
             0b11110011 => Opcode::DisableInterrupts,
             // EI
             0b11111011 => Opcode::EnableInterrupts,
-            _ => unreachable!(),
         };
-        todo!()
+        Ok(opcode)
     }
 
     fn execute(&self, opcode: Opcode, external: &mut CpuExternal) {
@@ -618,7 +401,7 @@ impl Cpu {
     fn arg_u8(&self, bytes: &[u8]) -> Result<u8, CpuError> {
         bytes
             .get(1)
-            .ok_or(CpuError::DecodeRequireBytes {
+            .ok_or(CpuError::DecodeNotEnoughBytes {
                 bytes_len: 2 - bytes.len() as u8,
             })
             .copied()
@@ -627,7 +410,7 @@ impl Cpu {
     fn arg_u16(&self, bytes: &[u8]) -> Result<u16, CpuError> {
         bytes
             .get(1..2)
-            .ok_or(CpuError::DecodeRequireBytes {
+            .ok_or(CpuError::DecodeNotEnoughBytes {
                 bytes_len: 3 - bytes.len() as u8,
             })
             .map(|b| ((b[1] as u16) << 8) | (b[0] as u16))
