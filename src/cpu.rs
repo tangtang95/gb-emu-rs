@@ -7,6 +7,8 @@ use opcode::{
     RegisterStack, ValueOrReg8,
 };
 
+use crate::memory::Memory;
+
 #[derive(Default)]
 struct Register {
     value: u16,
@@ -65,10 +67,26 @@ impl RegisterAF {
     fn c_flag(&self) -> bool {
         self.flags & (1 << 4) > 1
     }
+
+    fn set_z_flag(&mut self, z: bool) {
+        self.flags |= u8::from(z) << 7;
+    }
+
+    fn set_n_flag(&mut self, n: bool) {
+        self.flags |= u8::from(n) << 6;
+    }
+
+    fn set_h_flag(&mut self, h: bool) {
+        self.flags |= u8::from(h) << 5;
+    }
+
+    fn set_c_flag(&mut self, c: bool) {
+        self.flags |= u8::from(c) << 4;
+    }
 }
 
 #[derive(Default)]
-struct Cpu {
+pub struct Cpu {
     /// Program Counter
     pc: u16,
     /// Stack Pointer
@@ -83,25 +101,13 @@ struct Cpu {
     hl: Register,
 }
 
-/// 16 bit memory
-struct Memory {
-    memory: [u8; 65536],
-}
-struct CpuExternal<'a> {
+pub struct CpuExternal<'a> {
     memory: &'a mut Memory,
 }
 
-impl Memory {
-    fn read_u8(&self, address: u16) -> u8 {
-        self.memory[address as usize]
-    }
-}
-
-impl Default for Memory {
-    fn default() -> Self {
-        Self {
-            memory: [0u8; 65536],
-        }
+impl<'a> CpuExternal<'a> {
+    pub fn new(memory: &'a mut Memory) -> Self {
+        Self { memory }
     }
 }
 
@@ -394,8 +400,162 @@ impl Cpu {
         Ok(opcode)
     }
 
-    fn execute(&self, opcode: Opcode, external: &mut CpuExternal) {
-        todo!()
+    fn execute(&mut self, opcode: Opcode, external: &mut CpuExternal) {
+        match opcode {
+            Opcode::AddRegA(value_or_reg8, carry_opt) => {
+                let value = match value_or_reg8 {
+                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
+                    ValueOrReg8::Value(value) => value,
+                };
+                let prev_acc = self.af.acc;
+                let (mut new_acc, mut overflow) = self.af.acc.overflowing_add(value);
+                let carry = match carry_opt {
+                    CarryOption::With => u8::from(self.af.c_flag()),
+                    CarryOption::Without => 0,
+                };
+                let (carry_acc, overflow_carry) = new_acc.overflowing_add(carry);
+                new_acc = carry_acc;
+                overflow |= overflow_carry;
+                self.af.acc = new_acc;
+                self.af.set_z_flag(self.af.acc == 0);
+                self.af.set_n_flag(false);
+                self.af
+                    .set_h_flag((((prev_acc & 0xF) + (value & 0xF) + carry) & 0x10) > 0);
+                self.af.set_c_flag(overflow);
+            }
+            Opcode::SubtractRegA(value_or_reg8, carry_opt) => {
+                let value = match value_or_reg8 {
+                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
+                    ValueOrReg8::Value(value) => value,
+                };
+                let prev_acc = self.af.acc;
+                let (mut new_acc, mut overflow) = self.af.acc.overflowing_sub(value);
+                let carry = match carry_opt {
+                    CarryOption::With => u8::from(self.af.c_flag()),
+                    CarryOption::Without => 0,
+                };
+                let (carry_acc, overflow_carry) = new_acc.overflowing_sub(carry);
+                new_acc = carry_acc;
+                overflow |= overflow_carry;
+                self.af.acc = new_acc;
+                self.af.set_z_flag(self.af.acc == 0);
+                self.af.set_n_flag(true);
+                self.af.set_h_flag(
+                    (((prev_acc & 0xF)
+                        .wrapping_sub(value & 0xF)
+                        .wrapping_sub(carry))
+                        & 0x10)
+                        > 0,
+                );
+                self.af.set_c_flag(overflow);
+            }
+            Opcode::BitwiseAndRegA(value_or_reg8) => {
+                let value = match value_or_reg8 {
+                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
+                    ValueOrReg8::Value(value) => value,
+                };
+                self.af.acc &= value;
+                self.af.set_z_flag(self.af.acc == 0);
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(true);
+                self.af.set_c_flag(false);
+            }
+            Opcode::BitwiseXorRegA(value_or_reg8) => {
+                let value = match value_or_reg8 {
+                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
+                    ValueOrReg8::Value(value) => value,
+                };
+                self.af.acc ^= value;
+                self.af.set_z_flag(self.af.acc == 0);
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(false);
+                self.af.set_c_flag(false);
+            }
+            Opcode::BitwiseOrRegA(value_or_reg8) => {
+                let value = match value_or_reg8 {
+                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
+                    ValueOrReg8::Value(value) => value,
+                };
+                self.af.acc |= value;
+                self.af.set_z_flag(self.af.acc == 0);
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(false);
+                self.af.set_c_flag(false);
+            }
+            Opcode::ComparingRegA(value_or_reg8) => {
+                let value = match value_or_reg8 {
+                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
+                    ValueOrReg8::Value(value) => value,
+                };
+                let (new_acc, overflow) = self.af.acc.overflowing_sub(value);
+                self.af.set_z_flag(new_acc == 0);
+                self.af.set_n_flag(true);
+                self.af
+                    .set_h_flag((((self.af.acc & 0xF).wrapping_sub(value & 0xF)) & 0x10) > 0);
+                self.af.set_c_flag(overflow);
+            }
+            Opcode::AddToHl(reg16) => {
+                let value = self.reg16(&reg16);
+                let prev_hl = self.hl.value;
+                let (new_hl, overflow) = self.hl.value.overflowing_add(value);
+                self.hl.value = new_hl;
+                self.af.set_n_flag(false);
+                self.af.set_h_flag((((prev_hl & 0xFFF) + (value & 0xFFF)) & 0x1000) > 0);
+                self.af.set_c_flag(overflow)
+            },
+            Opcode::Increment(Register8or16::Reg8(reg8)) => {
+                let new_value = self.reg8(&reg8, external.memory) + 1;
+                self.set_reg8(&reg8, new_value, external.memory);
+                self.af.set_z_flag(new_value == 0);
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(new_value == 0x10);
+            },
+            Opcode::Increment(Register8or16::Reg16(reg16)) => {
+
+            },
+            Opcode::Decrement(_) => todo!(),
+            Opcode::BitTest { operand, bit_idx } => todo!(),
+            Opcode::BitReset { operand, bit_idx } => todo!(),
+            Opcode::BitSet { operand, bit_idx } => todo!(),
+            Opcode::BitSwap(_) => todo!(),
+            Opcode::BitRotateLeft(_, _) => todo!(),
+            Opcode::BitRotateRight(_, _) => todo!(),
+            Opcode::BitShiftLeft(_) => todo!(),
+            Opcode::BitShiftRight(_) => todo!(),
+            Opcode::BitShiftLogicRight(_) => todo!(),
+            Opcode::Load8 { src, dest } => todo!(),
+            Opcode::Load16 { src, dest } => todo!(),
+            Opcode::LoadMemFromA { dest_addr } => todo!(),
+            Opcode::LoadAFromMem { src_addr } => todo!(),
+            Opcode::LoadHighAToAddrC => todo!(),
+            Opcode::LoadHighAddrCToA => todo!(),
+            Opcode::LoadHighFromA { src_addr } => todo!(),
+            Opcode::LoadHighToA { dest_addr } => todo!(),
+            Opcode::LoadFromA { dest_addr } => todo!(),
+            Opcode::LoadToA { src_addr } => todo!(),
+            Opcode::JumpRelative { offset, cond } => todo!(),
+            Opcode::Jump { addr, cond } => todo!(),
+            Opcode::JumpHl => todo!(),
+            Opcode::Return(_) => todo!(),
+            Opcode::ReturnInterrupts => todo!(),
+            Opcode::Call { addr, cond } => todo!(),
+            Opcode::RstCallVec { tgt3 } => todo!(),
+            Opcode::LoadHlFromSpOffset { offset } => todo!(),
+            Opcode::AddSp(_) => todo!(),
+            Opcode::LoadFromSp { dest_addr } => todo!(),
+            Opcode::LoadSpFromHl => todo!(),
+            Opcode::Push(_) => todo!(),
+            Opcode::Pop(_) => todo!(),
+            Opcode::ComplementCarryFlag => todo!(),
+            Opcode::ComplementAccumulator => todo!(),
+            Opcode::DecimalAdjustAccumulator => todo!(),
+            Opcode::DisableInterrupts => todo!(),
+            Opcode::EnableInterrupts => todo!(),
+            Opcode::Halt => todo!(),
+            Opcode::Nop => todo!(),
+            Opcode::SetCarryFlag => todo!(),
+            Opcode::Stop => todo!(),
+        }
     }
 
     fn arg_u8(&self, bytes: &[u8]) -> Result<u8, CpuError> {
@@ -414,6 +574,41 @@ impl Cpu {
                 bytes_len: 3 - bytes.len() as u8,
             })
             .map(|b| ((b[1] as u16) << 8) | (b[0] as u16))
+    }
+
+    fn reg8(&self, reg: &Register8, memory: &Memory) -> u8 {
+        match reg {
+            Register8::B => self.bc.high(),
+            Register8::C => self.bc.low(),
+            Register8::D => self.de.high(),
+            Register8::E => self.de.low(),
+            Register8::H => self.hl.high(),
+            Register8::L => self.hl.low(),
+            Register8::HlAddress => memory.read_u8(self.hl.value),
+            Register8::A => self.af.acc,
+        }
+    }
+
+    fn set_reg8(&mut self, reg: &Register8, value: u8, memory: &mut Memory) {
+        match reg {
+            Register8::B => self.bc = Register::from_bytes(value, self.bc.low()),
+            Register8::C => self.bc = Register::from_bytes(self.bc.high(), value),
+            Register8::D => self.de = Register::from_bytes(value, self.de.low()),
+            Register8::E => self.de = Register::from_bytes(self.de.high(), value),
+            Register8::H => self.hl = Register::from_bytes(value, self.hl.low()),
+            Register8::L => self.hl = Register::from_bytes(self.hl.high(), value),
+            Register8::HlAddress => memory.write_u8(self.hl.value, value),
+            Register8::A => self.af.acc = value,
+        }
+    }
+
+    fn reg16(&self, reg: &Register16) -> u16 {
+        match reg {
+            Register16::BC => self.bc.value,
+            Register16::DE => self.de.value,
+            Register16::HL => self.hl.value,
+            Register16::SP => self.sp,
+        }
     }
 }
 
