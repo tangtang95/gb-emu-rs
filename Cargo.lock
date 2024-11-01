@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "gb-rs-emu"
+name = "gb-emu-rs"
 version = "0.1.0"
