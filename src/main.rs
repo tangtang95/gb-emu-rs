@@ -7,5 +7,5 @@ pub mod memory;
 fn main() {
     let mut cpu = Cpu::default();
     let mut memory = Memory::default();
-    let _ = cpu.next(&mut CpuExternal::new(&mut memory));
+    let _ = cpu.do_cycle(&mut CpuExternal::new(&mut memory));
 }

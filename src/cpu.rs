@@ -1,13 +1,12 @@
 mod error;
 mod opcode;
 
+use crate::memory::Memory;
 use error::CpuError;
 use opcode::{
     CarryOption, Opcode, Register16, Register8, Register8or16, RegisterCond, RegisterMemory,
     RegisterStack, ValueOrReg8,
 };
-
-use crate::memory::Memory;
 
 #[derive(Default)]
 struct Register {
@@ -46,6 +45,10 @@ struct RegisterAF {
 impl RegisterAF {
     fn new(acc: u8, flags: u8) -> Self {
         Self { acc, flags }
+    }
+
+    fn as_u16(&self) -> u16 {
+        ((self.acc as u16) << 8) | (self.flags as u16)
     }
 
     /// Get zero flag
@@ -99,36 +102,57 @@ pub struct Cpu {
     de: Register,
     /// HL register
     hl: Register,
+    /// IME (interrupt master enable flag \[write only\])
+    ime: bool,
+    /// Context for EI instruction
+    ei_context: EiContext,
+}
+
+/// EI context so that affects after next instruction
+#[derive(Default)]
+struct EiContext {
+    ei_next_cycle: bool,
+    ei_next_op_executed: bool,
 }
 
 pub struct CpuExternal<'a> {
-    memory: &'a mut Memory,
+    bus: &'a mut Memory,
 }
 
 impl<'a> CpuExternal<'a> {
-    pub fn new(memory: &'a mut Memory) -> Self {
-        Self { memory }
+    pub fn new(bus: &'a mut Memory) -> Self {
+        Self { bus }
     }
 }
 
 impl Cpu {
-    pub fn next(&mut self, external: &mut CpuExternal) -> Result<(), CpuError> {
-        let mut bytes = vec![self.fetch(external.memory)];
+    pub fn do_cycle(&mut self, external: &mut CpuExternal) -> Result<u8, CpuError> {
+        let mut bytes = vec![self.fetch(external.bus)];
         let opcode = match self.decode(bytes.as_ref()) {
             Ok(opcode) => opcode,
             Err(CpuError::DecodeNotEnoughBytes { bytes_len }) => {
-                (0..bytes_len).for_each(|_| bytes.push(self.fetch(external.memory)));
+                (0..bytes_len).for_each(|_| bytes.push(self.fetch(external.bus)));
                 self.decode(bytes.as_ref())?
             }
-            Err(_) => todo!(),
+            Err(err) => return Err(err),
         };
-        self.execute(opcode, external);
-        Ok(())
+
+        if self.ei_context.ei_next_cycle {
+            self.ei_context.ei_next_op_executed = true;
+        }
+        self.execute(&opcode, external)?;
+
+        if self.ei_context.ei_next_cycle && self.ei_context.ei_next_op_executed {
+            self.ime = true;
+            self.ei_context = EiContext::default();
+        }
+
+        Ok(self.cycles(&opcode))
     }
 
     fn fetch(&mut self, memory: &mut Memory) -> u8 {
         let byte = memory.read_u8(self.pc);
-        self.pc += 1;
+        self.pc = self.pc.wrapping_add(1);
         byte
     }
 
@@ -140,12 +164,12 @@ impl Cpu {
         let opcode = match op_byte {
             // Invalid opcodes
             0xD3 | 0xDB | 0xDD | 0xE3 | 0xE4 | 0xEB | 0xEC | 0xED | 0xF4 | 0xFC | 0xFD => {
-                return Err(CpuError::InvalidOpcode(op_byte))
+                return Err(CpuError::InvalidOpcode(op_byte));
             }
             0b00000000 => Opcode::Nop,
             // LD r16, imm16 (00xx0001)
             0b00000001 | 0b00010001 | 0b0100001 | 0b00110001 => Opcode::Load16 {
-                src: self.arg_u16(bytes)?,
+                src_value: self.arg_u16(bytes)?,
                 dest: Register16::try_from(bits54(op_byte))?,
             },
             // LD [r16mem], a (00xx0010)
@@ -198,22 +222,29 @@ impl Cpu {
             0b00111111 => Opcode::ComplementCarryFlag,
             // JR imm8
             0b00011000 => Opcode::JumpRelative {
-                offset: self.arg_u8(bytes)?,
+                offset: self.arg_u8(bytes)? as i8,
                 cond: None,
             },
             // JR cond, imm8
             0b00100000 | 0b00101000 | 0b00110000 | 0b00111000 => Opcode::JumpRelative {
-                offset: self.arg_u8(bytes)?,
+                offset: self.arg_u8(bytes)? as i8,
                 cond: Some(RegisterCond::try_from(bits43(op_byte))?),
             },
-            0b00010000 => Opcode::Stop,
-            // HALT (NOTE: must be before LD r8, r8)
-            0b01110110 => Opcode::Halt,
-            // LD r8, r8 (cover also HALT)
-            0b01000000..=0b01111111 => Opcode::Load8 {
-                src: ValueOrReg8::Reg8(Register8::try_from(bits543(op_byte))?),
-                dest: Register8::try_from(bits210(op_byte))?,
-            },
+            0b00010000 => {
+                let _ = self.arg_u8(bytes)?;
+                Opcode::Stop
+            }
+            // LD r8, r8 and HALT
+            0b01000000..=0b01111111 => {
+                if op_byte == 0b01110110 {
+                    Opcode::Halt
+                } else {
+                    Opcode::Load8 {
+                        src: ValueOrReg8::Reg8(Register8::try_from(bits543(op_byte))?),
+                        dest: Register8::try_from(bits210(op_byte))?,
+                    }
+                }
+            }
             // ADD a, r8
             0b10000000..=0b10000111 => Opcode::AddRegA(
                 ValueOrReg8::Reg8(Register8::try_from(bits210(op_byte))?),
@@ -348,7 +379,7 @@ impl Cpu {
                     }
                     0b00110000..=0b00110111 => Opcode::BitSwap(Register8::try_from(bits210(arg))?),
                     0b00111000..=0b00111111 => {
-                        Opcode::BitShiftLogicRight(Register8::try_from(bits210(arg))?)
+                        Opcode::BitShiftRightLogic(Register8::try_from(bits210(arg))?)
                     }
                     0b01000000..=0b01111111 => Opcode::BitTest {
                         operand: Register8::try_from(bits210(arg))?,
@@ -368,7 +399,7 @@ impl Cpu {
             0b11100010 => Opcode::LoadHighAToAddrC,
             // LDH [imm8], a
             0b11100000 => Opcode::LoadHighFromA {
-                src_addr: self.arg_u8(bytes)?,
+                offset: self.arg_u8(bytes)?,
             },
             // LD [imm16], a
             0b11101010 => Opcode::LoadFromA {
@@ -378,17 +409,17 @@ impl Cpu {
             0b11110010 => Opcode::LoadHighAddrCToA,
             // LDH a, [imm8]
             0b11110000 => Opcode::LoadHighToA {
-                dest_addr: self.arg_u8(bytes)?,
+                offset: self.arg_u8(bytes)?,
             },
             // LD a, [imm16]
             0b11111010 => Opcode::LoadToA {
                 src_addr: self.arg_u16(bytes)?,
             },
             // ADD sp, imm8
-            0b11101000 => Opcode::AddSp(self.arg_u8(bytes)?),
+            0b11101000 => Opcode::AddSp(self.arg_u8(bytes)? as i8),
             // LD hl, sp + imm8
             0b11111000 => Opcode::LoadHlFromSpOffset {
-                offset: self.arg_u8(bytes)?,
+                offset: self.arg_u8(bytes)? as i8,
             },
             // LD sp, hl
             0b11111001 => Opcode::LoadSpFromHl,
@@ -400,12 +431,12 @@ impl Cpu {
         Ok(opcode)
     }
 
-    fn execute(&mut self, opcode: Opcode, external: &mut CpuExternal) {
+    fn execute(&mut self, opcode: &Opcode, external: &mut CpuExternal) -> Result<(), CpuError> {
         match opcode {
             Opcode::AddRegA(value_or_reg8, carry_opt) => {
                 let value = match value_or_reg8 {
-                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
-                    ValueOrReg8::Value(value) => value,
+                    ValueOrReg8::Reg8(reg) => self.reg8(reg, external.bus),
+                    ValueOrReg8::Value(value) => *value,
                 };
                 let prev_acc = self.af.acc;
                 let (mut new_acc, mut overflow) = self.af.acc.overflowing_add(value);
@@ -420,13 +451,13 @@ impl Cpu {
                 self.af.set_z_flag(self.af.acc == 0);
                 self.af.set_n_flag(false);
                 self.af
-                    .set_h_flag((((prev_acc & 0xF) + (value & 0xF) + carry) & 0x10) > 0);
+                    .set_h_flag((((prev_acc & 0xF) + (value & 0xF) + carry) & 0x10) != 0);
                 self.af.set_c_flag(overflow);
             }
             Opcode::SubtractRegA(value_or_reg8, carry_opt) => {
                 let value = match value_or_reg8 {
-                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
-                    ValueOrReg8::Value(value) => value,
+                    ValueOrReg8::Reg8(reg) => self.reg8(reg, external.bus),
+                    ValueOrReg8::Value(value) => *value,
                 };
                 let prev_acc = self.af.acc;
                 let (mut new_acc, mut overflow) = self.af.acc.overflowing_sub(value);
@@ -445,14 +476,14 @@ impl Cpu {
                         .wrapping_sub(value & 0xF)
                         .wrapping_sub(carry))
                         & 0x10)
-                        > 0,
+                        != 0,
                 );
                 self.af.set_c_flag(overflow);
             }
             Opcode::BitwiseAndRegA(value_or_reg8) => {
                 let value = match value_or_reg8 {
-                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
-                    ValueOrReg8::Value(value) => value,
+                    ValueOrReg8::Reg8(reg) => self.reg8(reg, external.bus),
+                    ValueOrReg8::Value(value) => *value,
                 };
                 self.af.acc &= value;
                 self.af.set_z_flag(self.af.acc == 0);
@@ -462,8 +493,8 @@ impl Cpu {
             }
             Opcode::BitwiseXorRegA(value_or_reg8) => {
                 let value = match value_or_reg8 {
-                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
-                    ValueOrReg8::Value(value) => value,
+                    ValueOrReg8::Reg8(reg) => self.reg8(reg, external.bus),
+                    ValueOrReg8::Value(value) => *value,
                 };
                 self.af.acc ^= value;
                 self.af.set_z_flag(self.af.acc == 0);
@@ -473,8 +504,8 @@ impl Cpu {
             }
             Opcode::BitwiseOrRegA(value_or_reg8) => {
                 let value = match value_or_reg8 {
-                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
-                    ValueOrReg8::Value(value) => value,
+                    ValueOrReg8::Reg8(reg) => self.reg8(reg, external.bus),
+                    ValueOrReg8::Value(value) => *value,
                 };
                 self.af.acc |= value;
                 self.af.set_z_flag(self.af.acc == 0);
@@ -484,35 +515,305 @@ impl Cpu {
             }
             Opcode::ComparingRegA(value_or_reg8) => {
                 let value = match value_or_reg8 {
-                    ValueOrReg8::Reg8(reg) => self.reg8(&reg, external.memory),
-                    ValueOrReg8::Value(value) => value,
+                    ValueOrReg8::Reg8(reg) => self.reg8(reg, external.bus),
+                    ValueOrReg8::Value(value) => *value,
                 };
                 let (new_acc, overflow) = self.af.acc.overflowing_sub(value);
                 self.af.set_z_flag(new_acc == 0);
                 self.af.set_n_flag(true);
                 self.af
-                    .set_h_flag((((self.af.acc & 0xF).wrapping_sub(value & 0xF)) & 0x10) > 0);
+                    .set_h_flag((((self.af.acc & 0xF).wrapping_sub(value & 0xF)) & 0x10) != 0);
                 self.af.set_c_flag(overflow);
             }
             Opcode::AddToHl(reg16) => {
-                let value = self.reg16(&reg16);
+                let value = self.reg16(reg16);
                 let prev_hl = self.hl.value;
                 let (new_hl, overflow) = self.hl.value.overflowing_add(value);
                 self.hl.value = new_hl;
                 self.af.set_n_flag(false);
-                self.af.set_h_flag((((prev_hl & 0xFFF) + (value & 0xFFF)) & 0x1000) > 0);
+                self.af
+                    .set_h_flag((((prev_hl & 0xFFF) + (value & 0xFFF)) & 0x1000) != 0);
                 self.af.set_c_flag(overflow)
-            },
+            }
             Opcode::Increment(Register8or16::Reg8(reg8)) => {
-                let new_value = self.reg8(&reg8, external.memory) + 1;
-                self.set_reg8(&reg8, new_value, external.memory);
+                let new_value = self.reg8(reg8, external.bus).wrapping_add(1);
+                self.set_reg8(reg8, new_value, external.bus);
                 self.af.set_z_flag(new_value == 0);
                 self.af.set_n_flag(false);
                 self.af.set_h_flag(new_value == 0x10);
-            },
+            }
             Opcode::Increment(Register8or16::Reg16(reg16)) => {
-
+                let new_value = self.reg16(reg16).wrapping_add(1);
+                self.set_reg16(reg16, new_value);
+            }
+            Opcode::Decrement(Register8or16::Reg8(reg8)) => {
+                let new_value = self.reg8(reg8, external.bus).wrapping_sub(1);
+                self.set_reg8(reg8, new_value, external.bus);
+                self.af.set_z_flag(new_value == 0);
+                self.af.set_n_flag(true);
+                self.af.set_h_flag(new_value == 0xF);
+            }
+            Opcode::Decrement(Register8or16::Reg16(reg16)) => {
+                let new_value = self.reg16(reg16).wrapping_sub(1);
+                self.set_reg16(reg16, new_value);
+            }
+            Opcode::BitTest { operand, bit_idx } => {
+                assert!(*bit_idx <= 7);
+                let value = self.reg8(operand, external.bus);
+                let zero_test = (value & (1 << bit_idx)) == 0;
+                self.af.set_z_flag(zero_test);
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(true);
+            }
+            Opcode::BitReset { operand, bit_idx } => {
+                assert!(*bit_idx <= 7);
+                let value = self.reg8(operand, external.bus);
+                let new_value = value & !(1 << bit_idx);
+                self.set_reg8(operand, new_value, external.bus);
+            }
+            Opcode::BitSet { operand, bit_idx } => {
+                assert!(*bit_idx <= 7);
+                let value = self.reg8(operand, external.bus);
+                let new_value = value | (1 << bit_idx);
+                self.set_reg8(operand, new_value, external.bus);
+            }
+            Opcode::BitSwap(reg) => {
+                let value = self.reg8(reg, external.bus);
+                let new_value = ((value & 0xF) << 4) | (value >> 4);
+                self.set_reg8(reg, new_value, external.bus);
+                self.af.set_z_flag(new_value == 0);
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(false);
+                self.af.set_c_flag(false);
+            }
+            Opcode::BitRotateLeft(reg, carry_opt) => {
+                let value = self.reg8(reg, external.bus);
+                let new_value = match carry_opt {
+                    CarryOption::With => (value << 1) | self.af.c_flag() as u8,
+                    CarryOption::Without => value.rotate_left(1),
+                };
+                self.set_reg8(reg, new_value, external.bus);
+                self.af.set_z_flag(new_value == 0);
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(false);
+                self.af.set_c_flag((value & (1 << 7)) != 0);
+            }
+            Opcode::BitRotateRight(reg, carry_opt) => {
+                let value = self.reg8(reg, external.bus);
+                let new_value = match carry_opt {
+                    CarryOption::With => (value >> 1) | ((self.af.c_flag() as u8) << 7),
+                    CarryOption::Without => value.rotate_right(1),
+                };
+                self.set_reg8(reg, new_value, external.bus);
+                self.af.set_z_flag(new_value == 0);
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(false);
+                self.af.set_c_flag((value & 1) != 0);
+            }
+            Opcode::BitShiftLeft(reg) => {
+                let value = self.reg8(reg, external.bus);
+                let new_value = value << 1;
+                self.set_reg8(reg, new_value, external.bus);
+                self.af.set_z_flag(new_value == 0);
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(false);
+                self.af.set_c_flag((value & (1 << 7)) != 0);
+            }
+            Opcode::BitShiftRight(reg) => {
+                let value = self.reg8(reg, external.bus);
+                // NOTE: bit 7 of register is unchanged in shift right arithmetically
+                let new_value = value >> 1 | (value & (1 << 7));
+                self.set_reg8(reg, new_value, external.bus);
+                self.af.set_z_flag(new_value == 0);
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(false);
+                self.af.set_c_flag((value & 1) != 0);
+            }
+            Opcode::BitShiftRightLogic(reg) => {
+                let value = self.reg8(reg, external.bus);
+                let new_value = value >> 1;
+                self.set_reg8(reg, new_value, external.bus);
+                self.af.set_z_flag(new_value == 0);
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(false);
+                self.af.set_c_flag((value & 1) != 0);
+            }
+            Opcode::Load8 { src, dest } => {
+                let value = match src {
+                    ValueOrReg8::Reg8(reg) => self.reg8(reg, external.bus),
+                    ValueOrReg8::Value(value) => *value,
+                };
+                self.set_reg8(dest, value, external.bus);
+            }
+            Opcode::Load16 { src_value, dest } => {
+                self.set_reg16(dest, *src_value);
+            }
+            Opcode::LoadMemFromA { dest_addr } => {
+                self.set_reg_mem(dest_addr, self.af.acc, external.bus);
+            }
+            Opcode::LoadAFromMem { src_addr } => {
+                self.af.acc = self.reg_mem(src_addr, external.bus);
+            }
+            Opcode::LoadHighAToAddrC => {
+                let offset = self.bc.low() as u16;
+                external.bus.write_u8(0xFF00u16 + offset, self.af.acc);
+            }
+            Opcode::LoadHighAddrCToA => {
+                let offset = self.bc.low() as u16;
+                self.af.acc = external.bus.read_u8(0xFF00u16 + offset);
+            }
+            Opcode::LoadHighFromA { offset } => {
+                external
+                    .bus
+                    .write_u8(0xFF00u16 + *offset as u16, self.af.acc);
+            }
+            Opcode::LoadHighToA { offset } => {
+                self.af.acc = external.bus.read_u8(0xFF00u16 + *offset as u16)
+            }
+            Opcode::LoadFromA { dest_addr } => external.bus.write_u8(*dest_addr, self.af.acc),
+            Opcode::LoadToA { src_addr } => self.af.acc = external.bus.read_u8(*src_addr),
+            Opcode::JumpRelative { offset, cond } => match cond {
+                Some(reg) => {
+                    if self.reg_cond(reg) {
+                        self.pc = self.pc.wrapping_add_signed(i16::from(*offset));
+                    }
+                }
+                None => {
+                    self.pc = self.pc.wrapping_add_signed(i16::from(*offset));
+                }
             },
+            Opcode::Jump { addr, cond } => match cond {
+                Some(reg) => {
+                    if self.reg_cond(reg) {
+                        self.pc = *addr;
+                    }
+                }
+                None => {
+                    self.pc = *addr;
+                }
+            },
+            Opcode::JumpHl => self.pc = self.hl.value,
+            Opcode::Return(cond) => match cond {
+                Some(reg) => {
+                    if self.reg_cond(reg) {
+                        self.pc = self.pop_stack(external.bus);
+                    }
+                }
+                None => {
+                    self.pc = self.pop_stack(external.bus);
+                }
+            },
+            Opcode::ReturnInterrupts => {
+                self.ime = true;
+                self.pc = self.pop_stack(external.bus);
+            }
+            Opcode::Call { addr, cond } => match cond {
+                Some(reg) => {
+                    if self.reg_cond(reg) {
+                        self.push_stack(self.pc, external.bus);
+                        self.pc = *addr;
+                    }
+                }
+                None => {
+                    self.push_stack(self.pc, external.bus);
+                    self.pc = *addr;
+                }
+            },
+            Opcode::RstCallVec { tgt3 } => {
+                // TODO: verify this logic better. Not sure if this is really what it should do
+                assert!(*tgt3 <= 7);
+                self.push_stack(self.pc, external.bus);
+                self.pc = external.bus.read_u8(8 * (*tgt3 as u16)) as u16;
+            }
+            Opcode::LoadHlFromSpOffset { offset } => {
+                self.execute(&Opcode::AddSp(*offset), external)?;
+                self.hl.value = self.sp;
+            }
+            Opcode::AddSp(value) => {
+                let prev_sp = self.sp;
+                self.sp = self.sp.wrapping_add_signed(i16::from(*value));
+                self.af.set_z_flag(false);
+                self.af.set_n_flag(false);
+                // TODO: verify better how it should behave in a signed add
+                self.af
+                    .set_h_flag((((prev_sp & 0xF) as i8 + (value & 0xF)) & 0x10) != 0);
+                self.af
+                    .set_c_flag((((prev_sp & 0xFF) as i16 + *value as i16) & 0x100) != 0);
+            }
+            Opcode::LoadFromSp { dest_addr } => {
+                external.bus.write_u8(*dest_addr, (self.sp & 0xFF) as u8);
+                external.bus.write_u8(dest_addr + 1, (self.sp >> 8) as u8);
+            }
+            Opcode::LoadSpFromHl => self.sp = self.hl.value,
+            Opcode::Push(reg) => self.push_stack(self.reg_stk(reg), external.bus),
+            Opcode::Pop(reg) => {
+                let value = self.pop_stack(external.bus);
+                self.set_reg_stk(reg, value);
+            }
+            Opcode::ComplementCarryFlag => {
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(false);
+                self.af.set_c_flag(!self.af.c_flag());
+            }
+            Opcode::ComplementAccumulator => {
+                self.af.acc = !self.af.acc;
+                self.af.set_n_flag(true);
+                self.af.set_h_flag(true);
+            }
+            Opcode::DecimalAdjustAccumulator => {
+                let mut offset = 0u8;
+                let mut carry = false;
+                let acc = self.af.acc;
+                if (!self.af.n_flag() && acc & 0xF > 0x9) || self.af.h_flag() {
+                    offset |= 0x6;
+                }
+
+                if (!self.af.n_flag() && acc > 0x99) || self.af.c_flag() {
+                    offset |= 0x60;
+                    carry = true;
+                }
+
+                self.af.acc = if !self.af.n_flag() {
+                    acc.wrapping_add(offset)
+                } else {
+                    acc.wrapping_sub(offset)
+                };
+                self.af.set_z_flag(self.af.acc == 0);
+                self.af.set_h_flag(false);
+                self.af.set_c_flag(carry);
+            }
+            Opcode::DisableInterrupts => {
+                self.ime = false;
+            }
+            Opcode::EnableInterrupts => {
+                self.ei_context.ei_next_cycle = true;
+            }
+            Opcode::Halt => match self.ime {
+                true => todo!(),
+                false => todo!(),
+            },
+            Opcode::Nop => {}
+            Opcode::SetCarryFlag => {
+                self.af.set_n_flag(false);
+                self.af.set_h_flag(false);
+                self.af.set_c_flag(true);
+            }
+            Opcode::Stop => todo!(),
+        };
+        Ok(())
+    }
+
+    /// Return number of cycles required for an opcode to execute
+    fn cycles(&self, opcode: &Opcode) -> u8 {
+        match opcode {
+            Opcode::AddRegA(_, _) => todo!(),
+            Opcode::SubtractRegA(_, _) => todo!(),
+            Opcode::BitwiseAndRegA(_) => todo!(),
+            Opcode::BitwiseXorRegA(_) => todo!(),
+            Opcode::BitwiseOrRegA(_) => todo!(),
+            Opcode::ComparingRegA(_) => todo!(),
+            Opcode::AddToHl(_) => todo!(),
+            Opcode::Increment(_) => todo!(),
             Opcode::Decrement(_) => todo!(),
             Opcode::BitTest { operand, bit_idx } => todo!(),
             Opcode::BitReset { operand, bit_idx } => todo!(),
@@ -522,15 +823,15 @@ impl Cpu {
             Opcode::BitRotateRight(_, _) => todo!(),
             Opcode::BitShiftLeft(_) => todo!(),
             Opcode::BitShiftRight(_) => todo!(),
-            Opcode::BitShiftLogicRight(_) => todo!(),
+            Opcode::BitShiftRightLogic(_) => todo!(),
             Opcode::Load8 { src, dest } => todo!(),
-            Opcode::Load16 { src, dest } => todo!(),
+            Opcode::Load16 { src_value, dest } => todo!(),
             Opcode::LoadMemFromA { dest_addr } => todo!(),
             Opcode::LoadAFromMem { src_addr } => todo!(),
             Opcode::LoadHighAToAddrC => todo!(),
             Opcode::LoadHighAddrCToA => todo!(),
-            Opcode::LoadHighFromA { src_addr } => todo!(),
-            Opcode::LoadHighToA { dest_addr } => todo!(),
+            Opcode::LoadHighFromA { offset } => todo!(),
+            Opcode::LoadHighToA { offset } => todo!(),
             Opcode::LoadFromA { dest_addr } => todo!(),
             Opcode::LoadToA { src_addr } => todo!(),
             Opcode::JumpRelative { offset, cond } => todo!(),
@@ -576,7 +877,7 @@ impl Cpu {
             .map(|b| ((b[1] as u16) << 8) | (b[0] as u16))
     }
 
-    fn reg8(&self, reg: &Register8, memory: &Memory) -> u8 {
+    fn reg8(&self, reg: &Register8, bus: &Memory) -> u8 {
         match reg {
             Register8::B => self.bc.high(),
             Register8::C => self.bc.low(),
@@ -584,12 +885,12 @@ impl Cpu {
             Register8::E => self.de.low(),
             Register8::H => self.hl.high(),
             Register8::L => self.hl.low(),
-            Register8::HlAddress => memory.read_u8(self.hl.value),
+            Register8::HlAddress => bus.read_u8(self.hl.value),
             Register8::A => self.af.acc,
         }
     }
 
-    fn set_reg8(&mut self, reg: &Register8, value: u8, memory: &mut Memory) {
+    fn set_reg8(&mut self, reg: &Register8, value: u8, bus: &mut Memory) {
         match reg {
             Register8::B => self.bc = Register::from_bytes(value, self.bc.low()),
             Register8::C => self.bc = Register::from_bytes(self.bc.high(), value),
@@ -597,7 +898,7 @@ impl Cpu {
             Register8::E => self.de = Register::from_bytes(self.de.high(), value),
             Register8::H => self.hl = Register::from_bytes(value, self.hl.low()),
             Register8::L => self.hl = Register::from_bytes(self.hl.high(), value),
-            Register8::HlAddress => memory.write_u8(self.hl.value, value),
+            Register8::HlAddress => bus.write_u8(self.hl.value, value),
             Register8::A => self.af.acc = value,
         }
     }
@@ -609,6 +910,95 @@ impl Cpu {
             Register16::HL => self.hl.value,
             Register16::SP => self.sp,
         }
+    }
+
+    fn set_reg16(&mut self, reg: &Register16, value: u16) {
+        match reg {
+            Register16::BC => self.bc.value = value,
+            Register16::DE => self.de.value = value,
+            Register16::HL => self.hl.value = value,
+            Register16::SP => self.sp = value,
+        }
+    }
+
+    fn set_reg_mem(&mut self, reg: &RegisterMemory, value: u8, bus: &mut Memory) {
+        match reg {
+            RegisterMemory::BC => bus.write_u8(self.bc.value, value),
+            RegisterMemory::DE => bus.write_u8(self.de.value, value),
+            RegisterMemory::HLPlus => {
+                bus.write_u8(self.hl.value, value);
+                self.hl.value = self.hl.value.wrapping_add(1);
+            }
+            RegisterMemory::HLMinus => {
+                bus.write_u8(self.hl.value, value);
+                self.hl.value = self.hl.value.wrapping_sub(1);
+            }
+        }
+    }
+
+    fn reg_mem(&mut self, reg: &RegisterMemory, bus: &mut Memory) -> u8 {
+        match reg {
+            RegisterMemory::BC => bus.read_u8(self.bc.value),
+            RegisterMemory::DE => bus.read_u8(self.de.value),
+            RegisterMemory::HLPlus => {
+                let value = bus.read_u8(self.hl.value);
+                self.hl.value = self.hl.value.wrapping_add(1);
+                value
+            }
+            RegisterMemory::HLMinus => {
+                let value = bus.read_u8(self.hl.value);
+                self.hl.value = self.hl.value.wrapping_sub(1);
+                value
+            }
+        }
+    }
+
+    fn reg_cond(&self, reg: &RegisterCond) -> bool {
+        match reg {
+            RegisterCond::NZ => !self.af.z_flag(),
+            RegisterCond::Z => self.af.z_flag(),
+            RegisterCond::NC => !self.af.c_flag(),
+            RegisterCond::C => self.af.c_flag(),
+        }
+    }
+
+    fn reg_stk(&self, reg: &RegisterStack) -> u16 {
+        match reg {
+            RegisterStack::BC => self.bc.value,
+            RegisterStack::DE => self.de.value,
+            RegisterStack::HL => self.hl.value,
+            RegisterStack::AF => self.af.as_u16(),
+        }
+    }
+
+    fn set_reg_stk(&mut self, reg: &RegisterStack, value: u16) {
+        match reg {
+            RegisterStack::BC => self.bc.value = value,
+            RegisterStack::DE => self.de.value = value,
+            RegisterStack::HL => self.hl.value = value,
+            RegisterStack::AF => {
+                self.af.acc = (value >> 8) as u8;
+                self.af.flags = (value & 0xFF) as u8;
+            }
+        }
+    }
+
+    fn push_stack(&mut self, value: u16, bus: &mut Memory) {
+        self.sp = self.sp.wrapping_sub(1);
+        bus.write_u8(self.sp, ((value & 0xFF00) >> 8) as u8);
+
+        self.sp = self.sp.wrapping_sub(1);
+        bus.write_u8(self.sp, (value & 0xFF) as u8);
+    }
+
+    fn pop_stack(&mut self, bus: &Memory) -> u16 {
+        let low = bus.read_u8(self.sp) as u16;
+        self.sp = self.sp.wrapping_add(1);
+
+        let high = bus.read_u8(self.sp) as u16;
+        self.sp = self.sp.wrapping_add(1);
+
+        (high << 8) | low
     }
 }
 

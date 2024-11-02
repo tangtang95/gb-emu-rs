@@ -7,5 +7,5 @@ pub enum CpuError {
     #[error("Invalid register id: {id}")]
     InvalidRegisterId { id: u8 },
     #[error("Invalid opcode: {0}")]
-    InvalidOpcode(u8)
+    InvalidOpcode(u8),
 }

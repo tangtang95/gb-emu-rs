@@ -43,13 +43,13 @@ pub enum Opcode {
     /// SRA r8
     BitShiftRight(Register8),
     /// SRL r8
-    BitShiftLogicRight(Register8),
+    BitShiftRightLogic(Register8),
 
     // --- Load instructions ---
     /// LD r8, imm8 and LD r8, r8
     Load8 { src: ValueOrReg8, dest: Register8 },
     /// LD r16, imm16
-    Load16 { src: u16, dest: Register16 },
+    Load16 { src_value: u16, dest: Register16 },
     /// LD \[r16mem\], a
     LoadMemFromA { dest_addr: RegisterMemory },
     /// LD a, \[r16mem\]
@@ -59,9 +59,9 @@ pub enum Opcode {
     /// LDH a, \[c\]
     LoadHighAddrCToA,
     /// LDH \[imm8\], a
-    LoadHighFromA { src_addr: u8 },
+    LoadHighFromA { offset: u8 },
     /// LDH a, \[imm8\]
-    LoadHighToA { dest_addr: u8 },
+    LoadHighToA { offset: u8 },
     /// LD \[imm16\], a
     LoadFromA { dest_addr: u16 },
     /// LD a, \[imm16\]
@@ -70,7 +70,7 @@ pub enum Opcode {
     // --- Jumps and subroutines ---
     /// JR imm8 and JR cond, imm8
     JumpRelative {
-        offset: u8,
+        offset: i8,
         cond: Option<RegisterCond>,
     },
     /// JP imm16 and JP cond, imm16
@@ -94,9 +94,9 @@ pub enum Opcode {
 
     // --- Stack operations ---
     /// LD hl, sp + imm8
-    LoadHlFromSpOffset { offset: u8 },
+    LoadHlFromSpOffset { offset: i8 },
     /// ADD sp, imm8
-    AddSp(u8),
+    AddSp(i8),
     /// LD \[imm16\], sp
     LoadFromSp { dest_addr: u16 },
     /// LD sp, hl
