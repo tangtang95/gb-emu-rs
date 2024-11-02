@@ -593,7 +593,7 @@ impl Cpu {
                     CarryOption::Without => value.rotate_left(1),
                 };
                 self.set_reg8(reg, new_value, external.bus);
-                self.af.set_z_flag(new_value == 0);
+                self.af.set_z_flag(!matches!(reg, Register8::A) && new_value == 0);
                 self.af.set_n_flag(false);
                 self.af.set_h_flag(false);
                 self.af.set_c_flag((value & (1 << 7)) != 0);
@@ -605,7 +605,7 @@ impl Cpu {
                     CarryOption::Without => value.rotate_right(1),
                 };
                 self.set_reg8(reg, new_value, external.bus);
-                self.af.set_z_flag(new_value == 0);
+                self.af.set_z_flag(!matches!(reg, Register8::A) && new_value == 0);
                 self.af.set_n_flag(false);
                 self.af.set_h_flag(false);
                 self.af.set_c_flag((value & 1) != 0);
