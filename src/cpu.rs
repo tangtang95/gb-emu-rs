@@ -9,74 +9,6 @@ use opcode::{
 };
 
 #[derive(Default)]
-struct Register {
-    value: u16,
-}
-
-impl Register {
-    fn high(&self) -> u8 {
-        (self.value >> 8) as u8
-    }
-
-    fn low(&self) -> u8 {
-        (self.value & 0xFF) as u8
-    }
-
-    fn from_bytes(high: u8, low: u8) -> Self {
-        let value = ((high as u16) << 8) | (low as u16);
-        Register { value }
-    }
-}
-
-#[derive(Default)]
-struct RegisterAF {
-    pub acc: u8,
-    flags: u8,
-}
-
-impl RegisterAF {
-    fn as_u16(&self) -> u16 {
-        ((self.acc as u16) << 8) | (self.flags as u16)
-    }
-
-    /// Get zero flag
-    fn z_flag(&self) -> bool {
-        self.flags & (1 << 7) > 1
-    }
-
-    /// Get subtraction flag (BCD)
-    fn n_flag(&self) -> bool {
-        self.flags & (1 << 6) > 1
-    }
-
-    /// Get half carry flag (BCD)
-    fn h_flag(&self) -> bool {
-        self.flags & (1 << 5) > 1
-    }
-
-    /// Get carry flag
-    fn c_flag(&self) -> bool {
-        self.flags & (1 << 4) > 1
-    }
-
-    fn set_z_flag(&mut self, z: bool) {
-        self.flags |= u8::from(z) << 7;
-    }
-
-    fn set_n_flag(&mut self, n: bool) {
-        self.flags |= u8::from(n) << 6;
-    }
-
-    fn set_h_flag(&mut self, h: bool) {
-        self.flags |= u8::from(h) << 5;
-    }
-
-    fn set_c_flag(&mut self, c: bool) {
-        self.flags |= u8::from(c) << 4;
-    }
-}
-
-#[derive(Default)]
 pub struct Cpu {
     /// Program Counter
     pc: u16,
@@ -94,23 +26,6 @@ pub struct Cpu {
     ime: bool,
     /// Context for EI instruction
     ei_context: EiContext,
-}
-
-/// EI context so that affects after next instruction
-#[derive(Default)]
-struct EiContext {
-    ei_next_cycle: bool,
-    ei_next_op_executed: bool,
-}
-
-pub struct CpuExternal<'a> {
-    bus: &'a mut Memory,
-}
-
-impl<'a> CpuExternal<'a> {
-    pub fn new(bus: &'a mut Memory) -> Self {
-        Self { bus }
-    }
 }
 
 impl Cpu {
@@ -1097,6 +1012,91 @@ impl Cpu {
         self.sp = self.sp.wrapping_add(1);
 
         (high << 8) | low
+    }
+}
+
+#[derive(Default)]
+struct Register {
+    value: u16,
+}
+
+impl Register {
+    fn high(&self) -> u8 {
+        (self.value >> 8) as u8
+    }
+
+    fn low(&self) -> u8 {
+        (self.value & 0xFF) as u8
+    }
+
+    fn from_bytes(high: u8, low: u8) -> Self {
+        let value = ((high as u16) << 8) | (low as u16);
+        Register { value }
+    }
+}
+
+#[derive(Default)]
+struct RegisterAF {
+    pub acc: u8,
+    flags: u8,
+}
+
+impl RegisterAF {
+    fn as_u16(&self) -> u16 {
+        ((self.acc as u16) << 8) | (self.flags as u16)
+    }
+
+    /// Get zero flag
+    fn z_flag(&self) -> bool {
+        self.flags & (1 << 7) > 1
+    }
+
+    /// Get subtraction flag (BCD)
+    fn n_flag(&self) -> bool {
+        self.flags & (1 << 6) > 1
+    }
+
+    /// Get half carry flag (BCD)
+    fn h_flag(&self) -> bool {
+        self.flags & (1 << 5) > 1
+    }
+
+    /// Get carry flag
+    fn c_flag(&self) -> bool {
+        self.flags & (1 << 4) > 1
+    }
+
+    fn set_z_flag(&mut self, z: bool) {
+        self.flags |= u8::from(z) << 7;
+    }
+
+    fn set_n_flag(&mut self, n: bool) {
+        self.flags |= u8::from(n) << 6;
+    }
+
+    fn set_h_flag(&mut self, h: bool) {
+        self.flags |= u8::from(h) << 5;
+    }
+
+    fn set_c_flag(&mut self, c: bool) {
+        self.flags |= u8::from(c) << 4;
+    }
+}
+
+/// EI context so that affects after next instruction
+#[derive(Default)]
+struct EiContext {
+    ei_next_cycle: bool,
+    ei_next_op_executed: bool,
+}
+
+pub struct CpuExternal<'a> {
+    bus: &'a mut Memory,
+}
+
+impl<'a> CpuExternal<'a> {
+    pub fn new(bus: &'a mut Memory) -> Self {
+        Self { bus }
     }
 }
 
