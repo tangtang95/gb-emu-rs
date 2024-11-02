@@ -14,14 +14,6 @@ struct Register {
 }
 
 impl Register {
-    fn new(value: u16) -> Self {
-        Register { value }
-    }
-
-    fn as_u16(&self) -> u16 {
-        self.value
-    }
-
     fn high(&self) -> u8 {
         (self.value >> 8) as u8
     }
@@ -43,10 +35,6 @@ struct RegisterAF {
 }
 
 impl RegisterAF {
-    fn new(acc: u8, flags: u8) -> Self {
-        Self { acc, flags }
-    }
-
     fn as_u16(&self) -> u16 {
         ((self.acc as u16) << 8) | (self.flags as u16)
     }
@@ -140,6 +128,7 @@ impl Cpu {
         if self.ei_context.ei_next_cycle {
             self.ei_context.ei_next_op_executed = true;
         }
+        let cycles = self.cycles(&opcode);
         self.execute(&opcode, external)?;
 
         if self.ei_context.ei_next_cycle && self.ei_context.ei_next_op_executed {
@@ -147,7 +136,7 @@ impl Cpu {
             self.ei_context = EiContext::default();
         }
 
-        Ok(self.cycles(&opcode))
+        Ok(cycles)
     }
 
     fn fetch(&mut self, memory: &mut Memory) -> u8 {
@@ -593,7 +582,8 @@ impl Cpu {
                     CarryOption::Without => value.rotate_left(1),
                 };
                 self.set_reg8(reg, new_value, external.bus);
-                self.af.set_z_flag(!matches!(reg, Register8::A) && new_value == 0);
+                self.af
+                    .set_z_flag(!matches!(reg, Register8::A) && new_value == 0);
                 self.af.set_n_flag(false);
                 self.af.set_h_flag(false);
                 self.af.set_c_flag((value & (1 << 7)) != 0);
@@ -605,7 +595,8 @@ impl Cpu {
                     CarryOption::Without => value.rotate_right(1),
                 };
                 self.set_reg8(reg, new_value, external.bus);
-                self.af.set_z_flag(!matches!(reg, Register8::A) && new_value == 0);
+                self.af
+                    .set_z_flag(!matches!(reg, Register8::A) && new_value == 0);
                 self.af.set_n_flag(false);
                 self.af.set_h_flag(false);
                 self.af.set_c_flag((value & 1) != 0);
@@ -639,6 +630,10 @@ impl Cpu {
                 self.af.set_c_flag((value & 1) != 0);
             }
             Opcode::Load8 { src, dest } => {
+                assert!(
+                    !(matches!(src, ValueOrReg8::Reg8(Register8::HlAddress))
+                        && matches!(dest, Register8::HlAddress))
+                );
                 let value = match src {
                     ValueOrReg8::Reg8(reg) => self.reg8(reg, external.bus),
                     ValueOrReg8::Value(value) => *value,
@@ -806,56 +801,159 @@ impl Cpu {
     /// Return number of cycles required for an opcode to execute
     fn cycles(&self, opcode: &Opcode) -> u8 {
         match opcode {
-            Opcode::AddRegA(_, _) => todo!(),
-            Opcode::SubtractRegA(_, _) => todo!(),
-            Opcode::BitwiseAndRegA(_) => todo!(),
-            Opcode::BitwiseXorRegA(_) => todo!(),
-            Opcode::BitwiseOrRegA(_) => todo!(),
-            Opcode::ComparingRegA(_) => todo!(),
-            Opcode::AddToHl(_) => todo!(),
-            Opcode::Increment(_) => todo!(),
-            Opcode::Decrement(_) => todo!(),
-            Opcode::BitTest { operand, bit_idx } => todo!(),
-            Opcode::BitReset { operand, bit_idx } => todo!(),
-            Opcode::BitSet { operand, bit_idx } => todo!(),
-            Opcode::BitSwap(_) => todo!(),
-            Opcode::BitRotateLeft(_, _) => todo!(),
-            Opcode::BitRotateRight(_, _) => todo!(),
-            Opcode::BitShiftLeft(_) => todo!(),
-            Opcode::BitShiftRight(_) => todo!(),
-            Opcode::BitShiftRightLogic(_) => todo!(),
-            Opcode::Load8 { src, dest } => todo!(),
-            Opcode::Load16 { src_value, dest } => todo!(),
-            Opcode::LoadMemFromA { dest_addr } => todo!(),
-            Opcode::LoadAFromMem { src_addr } => todo!(),
-            Opcode::LoadHighAToAddrC => todo!(),
-            Opcode::LoadHighAddrCToA => todo!(),
-            Opcode::LoadHighFromA { offset } => todo!(),
-            Opcode::LoadHighToA { offset } => todo!(),
-            Opcode::LoadFromA { dest_addr } => todo!(),
-            Opcode::LoadToA { src_addr } => todo!(),
-            Opcode::JumpRelative { offset, cond } => todo!(),
-            Opcode::Jump { addr, cond } => todo!(),
-            Opcode::JumpHl => todo!(),
-            Opcode::Return(_) => todo!(),
-            Opcode::ReturnInterrupts => todo!(),
-            Opcode::Call { addr, cond } => todo!(),
-            Opcode::RstCallVec { tgt3 } => todo!(),
-            Opcode::LoadHlFromSpOffset { offset } => todo!(),
-            Opcode::AddSp(_) => todo!(),
-            Opcode::LoadFromSp { dest_addr } => todo!(),
-            Opcode::LoadSpFromHl => todo!(),
-            Opcode::Push(_) => todo!(),
-            Opcode::Pop(_) => todo!(),
-            Opcode::ComplementCarryFlag => todo!(),
-            Opcode::ComplementAccumulator => todo!(),
-            Opcode::DecimalAdjustAccumulator => todo!(),
-            Opcode::DisableInterrupts => todo!(),
-            Opcode::EnableInterrupts => todo!(),
-            Opcode::Halt => todo!(),
-            Opcode::Nop => todo!(),
-            Opcode::SetCarryFlag => todo!(),
-            Opcode::Stop => todo!(),
+            Opcode::AddRegA(ValueOrReg8::Reg8(Register8::HlAddress), _)
+            | Opcode::AddRegA(ValueOrReg8::Value(_), _) => 2,
+            Opcode::AddRegA(ValueOrReg8::Reg8(_), _) => 1,
+            Opcode::SubtractRegA(ValueOrReg8::Reg8(Register8::HlAddress), _)
+            | Opcode::SubtractRegA(ValueOrReg8::Value(_), _) => 2,
+            Opcode::SubtractRegA(ValueOrReg8::Reg8(_), _) => 1,
+            Opcode::BitwiseAndRegA(ValueOrReg8::Reg8(Register8::HlAddress))
+            | Opcode::BitwiseAndRegA(ValueOrReg8::Value(_)) => 2,
+            Opcode::BitwiseAndRegA(ValueOrReg8::Reg8(_)) => 1,
+            Opcode::BitwiseXorRegA(ValueOrReg8::Reg8(Register8::HlAddress))
+            | Opcode::BitwiseXorRegA(ValueOrReg8::Value(_)) => 2,
+            Opcode::BitwiseXorRegA(ValueOrReg8::Reg8(_)) => 1,
+            Opcode::BitwiseOrRegA(ValueOrReg8::Reg8(Register8::HlAddress))
+            | Opcode::BitwiseOrRegA(ValueOrReg8::Value(_)) => 2,
+            Opcode::BitwiseOrRegA(ValueOrReg8::Reg8(_)) => 1,
+            Opcode::ComparingRegA(ValueOrReg8::Reg8(Register8::HlAddress))
+            | Opcode::ComparingRegA(ValueOrReg8::Value(_)) => 2,
+            Opcode::ComparingRegA(ValueOrReg8::Reg8(_)) => 1,
+            Opcode::AddToHl(_) => 2,
+            Opcode::Increment(Register8or16::Reg8(Register8::HlAddress)) => 3,
+            Opcode::Increment(Register8or16::Reg8(_)) => 1,
+            Opcode::Increment(Register8or16::Reg16(_)) => 2,
+            Opcode::Decrement(Register8or16::Reg8(Register8::HlAddress)) => 3,
+            Opcode::Decrement(Register8or16::Reg8(_)) => 1,
+            Opcode::Decrement(Register8or16::Reg16(_)) => 2,
+            Opcode::BitTest {
+                operand: Register8::HlAddress,
+                bit_idx: _,
+            } => 3,
+            Opcode::BitTest {
+                operand: _,
+                bit_idx: _,
+            } => 2,
+            Opcode::BitReset {
+                operand: Register8::HlAddress,
+                bit_idx: _,
+            } => 4,
+            Opcode::BitReset {
+                operand: _,
+                bit_idx: _,
+            } => 2,
+            Opcode::BitSet {
+                operand: Register8::HlAddress,
+                bit_idx: _,
+            } => 4,
+            Opcode::BitSet {
+                operand: _,
+                bit_idx: _,
+            } => 2,
+            Opcode::BitSwap(Register8::HlAddress) => 4,
+            Opcode::BitSwap(_) => 2,
+            Opcode::BitRotateLeft(Register8::A, _) => 1,
+            Opcode::BitRotateLeft(Register8::HlAddress, _) => 4,
+            Opcode::BitRotateLeft(_, _) => 2,
+            Opcode::BitRotateRight(Register8::A, _) => 1,
+            Opcode::BitRotateRight(Register8::HlAddress, _) => 4,
+            Opcode::BitRotateRight(_, _) => 2,
+            Opcode::BitShiftLeft(Register8::HlAddress) => 4,
+            Opcode::BitShiftLeft(_) => 2,
+            Opcode::BitShiftRight(Register8::HlAddress) => 4,
+            Opcode::BitShiftRight(_) => 2,
+            Opcode::BitShiftRightLogic(Register8::HlAddress) => 4,
+            Opcode::BitShiftRightLogic(_) => 2,
+            Opcode::Load8 {
+                src: ValueOrReg8::Reg8(Register8::HlAddress),
+                dest: _,
+            }
+            | Opcode::Load8 {
+                src: ValueOrReg8::Reg8(_),
+                dest: Register8::HlAddress,
+            } => 2,
+            Opcode::Load8 {
+                src: ValueOrReg8::Value(_),
+                dest: Register8::HlAddress,
+            } => 3,
+            Opcode::Load8 {
+                src: ValueOrReg8::Value(_),
+                dest: _,
+            } => 2,
+            Opcode::Load8 {
+                src: ValueOrReg8::Reg8(_),
+                dest: _,
+            } => 1,
+            Opcode::Load16 {
+                src_value: _,
+                dest: _,
+            } => 3,
+            Opcode::LoadMemFromA { dest_addr: _ } => 2,
+            Opcode::LoadAFromMem { src_addr: _ } => 2,
+            Opcode::LoadHighAToAddrC => 2,
+            Opcode::LoadHighAddrCToA => 2,
+            Opcode::LoadHighFromA { offset: _ } => 3,
+            Opcode::LoadHighToA { offset: _ } => 3,
+            Opcode::LoadFromA { dest_addr: _ } => 4,
+            Opcode::LoadToA { src_addr: _ } => 4,
+            Opcode::JumpRelative { offset: _, cond } => match cond {
+                Some(reg) => {
+                    if self.reg_cond(reg) {
+                        3
+                    } else {
+                        2
+                    }
+                }
+                None => 3,
+            },
+            Opcode::Jump { addr: _, cond } => match cond {
+                Some(reg) => {
+                    if self.reg_cond(reg) {
+                        4
+                    } else {
+                        3
+                    }
+                }
+                None => 4,
+            },
+            Opcode::JumpHl => 1,
+            Opcode::Return(cond) => match cond {
+                Some(reg) => {
+                    if self.reg_cond(reg) {
+                        5
+                    } else {
+                        2
+                    }
+                }
+                None => 4,
+            },
+            Opcode::ReturnInterrupts => 4,
+            Opcode::Call { addr: _, cond } => match cond {
+                Some(reg) => {
+                    if self.reg_cond(reg) {
+                        6
+                    } else {
+                        3
+                    }
+                }
+                None => 6,
+            },
+            Opcode::RstCallVec { tgt3: _ } => 4,
+            Opcode::LoadHlFromSpOffset { offset: _ } => 3,
+            Opcode::AddSp(_) => 4,
+            Opcode::LoadFromSp { dest_addr: _ } => 5,
+            Opcode::LoadSpFromHl => 2,
+            Opcode::Push(_) => 4,
+            Opcode::Pop(_) => 3,
+            Opcode::ComplementCarryFlag
+            | Opcode::ComplementAccumulator
+            | Opcode::DecimalAdjustAccumulator
+            | Opcode::DisableInterrupts
+            | Opcode::EnableInterrupts => 1,
+            Opcode::Halt => 0,
+            Opcode::Nop => 1,
+            Opcode::SetCarryFlag => 1,
+            Opcode::Stop => 0,
         }
     }
 
