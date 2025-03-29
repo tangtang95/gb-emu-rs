@@ -16,7 +16,7 @@ pub struct Cpu {
     sp: u16,
     /// AF register
     af: RegisterAF,
-    /// BF register
+    /// BC register
     bc: Register,
     /// DE register
     de: Register,
@@ -29,6 +29,18 @@ pub struct Cpu {
 }
 
 impl Cpu {
+    /// Based on table https://gbdev.io/pandocs/Power_Up_Sequence.html#cpu-registers
+    pub fn reset_to_after_boot_rom(&mut self) {
+        // For DMG only
+        self.pc = 0x0100;
+        self.sp = 0xFFFE;
+        self.af.acc = 0x11;
+        self.af.set_z_flag(true);
+        self.bc.value = 0x0013;
+        self.de.value = 0x00D8;
+        self.hl.value = 0x014D;
+    }
+
     pub fn do_cycle(&mut self, external: &mut CpuExternal) -> Result<u8, CpuError> {
         let mut bytes = vec![self.fetch(external.bus)];
         let opcode = match self.decode(bytes.as_ref()) {

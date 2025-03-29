@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::{str::FromStr, sync::Arc};
 use std::rc::Rc;
 
@@ -122,16 +123,21 @@ fn main() {
 
     let mut cpu = Cpu::default();
     let mut memory = Memory::default();
-    let Ok(rom_file) = std::fs::File::open(&rom_path) else {
+    cpu.reset_to_after_boot_rom();
+    memory.reset_to_after_boot_rom();
+    let Ok(mut rom_file) = std::fs::File::open(&rom_path) else {
         println!("Could not open rom file {}!", rom_path.display());
         std::process::exit(-1);
     };
+    let mut rom_bytes = Vec::new();
+    rom_file.read_to_end(&mut rom_bytes).unwrap();
+    memory.load_rom(&rom_bytes).unwrap();
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     // NOTE: use cycles to decrease it in order to precisely implement cpu clock frequency.
     // If not enough clocks, execute anyway the instruction, but next cycles decrease its amount
-    // let _ = cpu.do_cycle(&mut CpuExternal::new(&mut memory));
+    let _ = cpu.do_cycle(&mut CpuExternal::new(&mut memory));
 
     let mut app = App::default();
     event_loop.run_app(&mut app).unwrap();
