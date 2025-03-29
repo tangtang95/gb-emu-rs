@@ -1,6 +1,5 @@
 use std::io::Read;
 use std::{str::FromStr, sync::Arc};
-use std::rc::Rc;
 
 use cpu::{Cpu, CpuExternal};
 use memory::Memory;
